@@ -1,0 +1,48 @@
+{
+  "$comment": "Platform geometry for the Brighton Main Line. THIS IS THE APP'S CORE ASSET AND MOST OF IT IS NOT YET KNOWN. No feed publishes it; it is calibrated by standing on the platform. See docs/brighton-line-notes.md.",
+  "schema": {
+    "pos": "Position along the platform as a fraction from the LONDON end (0.0) to the COUNTRY/coast end (1.0). 'London end' is unambiguous on this route and survives trains running in either direction.",
+    "confidence": "high = verified in person or structurally certain | estimated = inferred, treat as a guess | unverified = placeholder, DO NOT SHIP as advice",
+    "access.type": "concourse | barrier | footbridge | subway | stairs | lift | escalator | street_exit"
+  },
+  "route": {
+    "name": "Brighton Main Line",
+    "operators": ["SN", "TL", "GX"],
+    "london_termini": ["VIC", "LBG", "BFR", "CTK", "ZFD", "STP"]
+  },
+  "stations": [
+    {
+      "crs": "BTN", "name": "Brighton", "type": "terminus",
+      "notes": "Buffer stops and concourse at the SOUTH (country) end; all London departures leave northwards. The front of a departing train is therefore at the FAR end of the platform, the longest walk from the barriers. This is why the front coaches are the quiet ones at Brighton and it is the single most reliable fact in this file.",
+      "access": [
+        { "type": "concourse", "pos": 1.0, "confidence": "high", "notes": "Barrier line at the buffers." }
+      ],
+      "walk_seconds_full_platform": 100,
+      "walk_seconds_confidence": "estimated"
+    },
+    { "crs": "PRP", "name": "Preston Park", "type": "through", "access": [ { "type": "footbridge", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "HSK", "name": "Hassocks", "type": "through", "access": [ { "type": "footbridge", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "BUG", "name": "Burgess Hill", "type": "through", "access": [ { "type": "footbridge", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "HHE", "name": "Haywards Heath", "type": "through", "notes": "Key interception point: heavy commuter boarding into an already-loaded train, short dwell.", "access": [ { "type": "subway", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "BAB", "name": "Balcombe", "type": "through", "access": [ { "type": "footbridge", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "TBD", "name": "Three Bridges", "type": "through", "access": [ { "type": "footbridge", "pos": null, "confidence": "unverified" } ] },
+    {
+      "crs": "GTW", "name": "Gatwick Airport", "type": "through",
+      "notes": "Distorts everything: luggage, unfamiliar passengers, long dwell, people boarding wherever the doors open rather than where the seats are. Expect the loading model to behave differently here than at commuter stops.",
+      "access": [ { "type": "escalator", "pos": null, "confidence": "unverified" } ]
+    },
+    { "crs": "HOR", "name": "Horley", "type": "through", "access": [ { "type": "footbridge", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "ECR", "name": "East Croydon", "type": "through", "notes": "Second major interception point; also where many alight.", "access": [ { "type": "footbridge", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "CLJ", "name": "Clapham Junction", "type": "through", "notes": "Victoria services only.", "access": [ { "type": "subway", "pos": null, "confidence": "unverified" } ] },
+    {
+      "crs": "VIC", "name": "London Victoria", "type": "terminus",
+      "notes": "Buffer stops and concourse at the north end; an arriving Brighton train faces them. The FRONT of the train is nearest the barriers, so front coaches are the quick exit and fill with exit-optimisers in the morning peak. Directly opposes the seat-seeking advice at Brighton, which is exactly the Seat/Exit trade-off the app has to expose.",
+      "access": [ { "type": "concourse", "pos": 0.0, "confidence": "high" } ]
+    },
+    { "crs": "LBG", "name": "London Bridge", "type": "through", "notes": "Thameslink through platforms. Escalator position on the platform is the thing to measure.", "access": [ { "type": "escalator", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "BFR", "name": "London Blackfriars", "type": "through", "notes": "Unusual: exits at BOTH ends (north bank / City and south bank / Bankside). Which one is 'the exit' depends on the user's onward walk, so this station needs a per-user preference, not a single position.", "access": [ { "type": "street_exit", "pos": null, "confidence": "unverified", "notes": "north bank" }, { "type": "street_exit", "pos": null, "confidence": "unverified", "notes": "south bank" } ] },
+    { "crs": "CTK", "name": "City Thameslink", "type": "through", "notes": "Two street exits at opposite ends.", "access": [ { "type": "street_exit", "pos": null, "confidence": "unverified" }, { "type": "street_exit", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "ZFD", "name": "Farringdon", "type": "through", "access": [ { "type": "escalator", "pos": null, "confidence": "unverified" } ] },
+    { "crs": "STP", "name": "London St Pancras International", "type": "through", "notes": "Thameslink box, deep-level.", "access": [ { "type": "escalator", "pos": null, "confidence": "unverified" } ] }
+  ]
+}
