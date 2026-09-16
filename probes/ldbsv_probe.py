@@ -321,6 +321,15 @@ def run(args: argparse.Namespace) -> int:
     print("\n" + report)
     print(f"Written to {path}")
     print("Raw payloads in", out_dir / "raw", "- worth one read by eye.")
+
+    # Exit non-zero when nothing at all came back. Unattended, a run where every
+    # request failed looks identical to a run that found no loading data, and a
+    # cron job reporting success while learning nothing is worse than no cron job.
+    if not sum(findings.services.values()):
+        print("\nNO SERVICES RETURNED - treating as failure, not as a finding.\n"
+              "Every request failed, or the endpoint path is wrong. Check the errors above.",
+              file=sys.stderr)
+        return 1
     return 0
 
 
