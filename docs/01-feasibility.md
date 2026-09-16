@@ -29,14 +29,25 @@ Darwin's Push Port schema distinguishes two things that are easy to conflate:
 | Message | Granularity | Content | Use to us |
 |---|---|---|---|
 | `formationLoading` | **per coach**, per location, per service | `coachNumber` + `loadingPercentage` (integer 0–100), plus `source` / `sourceSystem` | **This is the product.** Exactly the field the app needs. |
-| `serviceLoading` | whole train, per location | either a `loadingPercentage` (0–100) or a `loadingCategory` code, each tagged `Typical` or `Expected` | Fallback tier. Drives "this train is usually busy" in consumer apps. |
+| `serviceLoading` | whole train, per location | either a `loadingPercentage` (0–100) or a `loadingCategory` code, each tagged `Typical` or `Expected` | Fallback tier. Drives "this train is usually busy" in consumer apps. **The only place `Typical` (historic) exists.** |
 | `formation` | per coach | ordered coach list with `coachNumber`, `coachClass`, toilet status/type | Needed to turn "coach C" into "5th of 12". |
 
 Two properties matter for design:
 
-- **Coaches are listed front-to-rear** — the first element is the front of the train in the
-  direction of travel. This is the hook that lets us say "walk to the far end", but it only
-  works with station geometry bolted on (§6, `brighton-line-notes.md`).
+- **There is no historic per-coach figure, on any feed, at any tier.** The `Typical` /
+  `Expected` marker (`LoadingValueType`) hangs off `LoadingData`, which is keyed on service +
+  location and has **no coach dimension**. `CoachLoadingData` carries a bare 0–100 with no
+  type attribute, and has been unchanged since Push Port v15 (2017). So historic loading is
+  whole-train only; a per-carriage historic picture does not exist to be fetched and can only
+  be built by recording the live feed. This is a property of the schema, so no API key or
+  access tier changes it. *(Established 2026-09-16 from the shipped RDG/Thales XSDs — see
+  `docs/research/darwin-loading-coverage.md`.)*
+- **Coach order is a convention, not a guarantee.** An earlier draft of this document stated
+  front-to-rear ordering as established fact, on the strength of a community wiki. The
+  schemas say only "a list of coaches in a train formation" — no ordering is specified in
+  any of the three. Worse, `isReverseFormation` exists as a separate flag on service-detail
+  responses, so even correct ordering never determines platform position on its own. Treat
+  ordering as something to verify against observation, not to rely on.
 - **Loading is stated per calling location.** A service gets a loading figure at each point
   where it calls to pick up or set down. So a Brighton departure can in principle carry a
   figure for what it will look like at Haywards Heath — but whether GTR populates forward
@@ -127,9 +138,10 @@ easier one technically.
 
 Two further constraints the design has to absorb:
 
-- **Coach identity is not platform position.** Darwin gives front-to-rear order; turning that
-  into "stand at the far end, past the third shelter" needs per-station geometry that no feed
-  provides. For one route that is a hand-built table of a dozen stations —
+- **Coach identity is not platform position.** Coach order is conventionally front-to-rear
+  but not schema-guaranteed, and `isReverseFormation` can invert it; turning an identifier
+  into "stand at the far end, past the third shelter" then needs per-station geometry that no
+  feed provides. For one route that is a hand-built table of a dozen stations —
   see `brighton-line-notes.md`. It is the app's real defensible asset.
 - **"Best carriage" is a trade-off, not a fact.** A seat you keep for 55 minutes versus a
   carriage that lands by the Blackfriars exit are different answers. The app must ask, or

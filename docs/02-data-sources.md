@@ -48,12 +48,16 @@ Darwin is National Rail's real-time information engine. Two ways in.
 ```
 formation
   coach[]            identifier ("A", "1"), class ("First"/"Standard"), toilet{status,type}
-                     ORDERED FRONT TO REAR in direction of travel
+                     order is CONVENTIONALLY front-to-rear but NOT specified in any schema;
+                     isReverseFormation (service detail only) can invert it
 formationLoading     rid, fid, tpl (location)
   loading[]          coachNumber, loadingPercentage (int 0-100), source, sourceSystem
+                     NO type attribute -- live/estimated only, never historic
 serviceLoading       rid, tpl
   loadingCategory    code (1-4 chars) + type: "Typical" | "Expected"
   loadingPercentage  int 0-100 + type
+                     ^ whole-train only: LoadingData has no coach dimension, so
+                       "Typical" (historic) per carriage DOES NOT EXIST anywhere
 LoadingCategoryReference   code, name, TOC, typicalDescription, expectedDescription,
                            definition, colour (hex), image
 ```
@@ -79,9 +83,10 @@ end"; a daily commuter can calibrate it in a fortnight.
 1. **`serviceLoading` (Typical/Expected)** — whole-train busy-ness. Widely populated;
    Southern's public "find a quieter train" tool is built on the same counting data
    (previous-two-weeks average, refreshed daily).
-2. **Your own recorded history** — log what you observe. For a single commuter on a single
-   route, ~30 logged journeys gives a usable per-carriage prior. This is not a consolation
-   prize: it is the highest-quality data available for *your* specific trains.
+2. **Your own recorded history** — recording the live feed, plus logging what you observe.
+   **This is not a fallback, it is the only route to a per-carriage historic figure** (see
+   `01-feasibility.md` §2): the industry does not publish one. Start the recorder before
+   anything else, because a day not recorded cannot be back-filled.
 3. **Crowdsourced reports** — one-tap "got a seat in coach 8". Chicken-and-egg at scale, but
    viable for one line with a few dozen regulars.
 4. **Geometry prior alone** — distance-decay from the platform entrance. Weak per train,
