@@ -58,3 +58,45 @@ accumulates if something is recording it.
 
 Record whatever you find in `docs/01-feasibility.md` §5 with the date. This is the kind of
 thing that changes quietly, and a dated note is worth more than a remembered impression.
+
+---
+
+## 4. The staff-feed probe — `ldbsv_probe.py`
+
+This is the one that answers [issue #10](https://github.com/richbroad29/train-loader/issues/10),
+and it is the only thing the map is currently waiting on.
+
+**It must run on the VPS.** `api1.raildata.org.uk` is blocked by the egress proxy in Claude
+Code's container — the tunnel is refused at 403, the same block that stopped both research
+agents reaching any rail website. The key is on the VPS anyway, so nothing needs to move and
+nothing needs pasting into a chat.
+
+```sh
+# on the Oracle box
+cd ~/rail-crossing
+set -a && . backend/.env && set +a      # picks up RDM_API_KEY
+python3 /path/to/ldbsv_probe.py --samples 12 --interval 600
+```
+
+That polls Preston Park and London Bridge every ten minutes for two hours. **Run it across a
+weekday morning peak, 07:00–09:00.** Off-peak coverage answers none of the open questions.
+An evening run (16:00–18:30) covers the return leg.
+
+Endpoint, `x-apikey` header and the `YYYYMMDDTHHMMSS` Europe/London timestamp are taken from
+`rail-crossing`'s own `backend/src/ldb-poller.js`, so if the level-crossing backend works,
+this works. Stdlib only — nothing to install.
+
+Check it before trusting it: `python3 ldbsv_probe.py --selftest` runs offline.
+
+It prints a markdown report and saves it alongside the raw payloads. **Send the report
+back.** The raw payloads are worth one read by eye the first time — the response shape is the
+thing documentation is least reliable about.
+
+### What the verdict means
+
+| Report says | Meaning |
+|---|---|
+| Per-coach loading IS published | The live product is buildable on access you already have |
+| Formations yes, loading absent | GTR does not supply it; the recorder has nothing to record |
+| Neither, but HTTP 200s | Suspect the path before believing the absence |
+| 401 / 403 / 404 | Config, not a finding. Fix and rerun |
