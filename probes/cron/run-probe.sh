@@ -39,15 +39,15 @@ LOG="$LOG_DIR/$MODE-$STAMP.log"
 # Everything from here lands in the log as well as on stdout.
 exec > >(tee -a "$LOG") 2>&1
 
-echo "=== $MODE run, started $(date -Is) ==="
+echo "=== $MODE run, started $(date +%Y-%m-%dT%H:%M:%S%z) ==="
 
 finish() {
   local code=$?
   if [ $code -eq 0 ]; then
-    echo "OK   $(date -Is)  $MODE  -> $RUN_DIR" | tee "$PROBE_OUT/last-run.txt"
+    echo "OK   $(date +%Y-%m-%dT%H:%M:%S%z)  $MODE  -> $RUN_DIR" | tee "$PROBE_OUT/last-run.txt"
   else
     # Loud, and findable without reading the whole log.
-    echo "FAIL $(date -Is)  $MODE  exit=$code  see $LOG" | tee "$PROBE_OUT/last-run.txt"
+    echo "FAIL $(date +%Y-%m-%dT%H:%M:%S%z)  $MODE  exit=$code  see $LOG" | tee "$PROBE_OUT/last-run.txt"
   fi
   exit $code
 }
@@ -82,4 +82,4 @@ find "$PROBE_OUT" -maxdepth 1 -type d -name '*-20*' -mtime "+$KEEP_DAYS" -prune 
 find "$LOG_DIR" -type f -name '*.log' -mtime "+$KEEP_DAYS" -delete 2>/dev/null || true
 
 echo "disk used by probe runs: $(du -sh "$PROBE_OUT" 2>/dev/null | cut -f1)"
-echo "=== finished $(date -Is) ==="
+echo "=== finished $(date +%Y-%m-%dT%H:%M:%S%z) ==="

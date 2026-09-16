@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -72,28 +73,65 @@ def paths_matching(doc: Any, hints: tuple[str, ...]) -> list[str]:
     return [p for p, _ in walk(doc) if any(h in leaf(p) for h in hints)]
 
 
+def numeric(value: Any) -> int | None:
+    """A 0-100 out of a scalar, a percent string, or a wrapper object."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip().rstrip("%")
+        return int(stripped) if stripped.isdigit() else None
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            if any(h in key.lower() for h in ("percent", "value", "loading", "amount")):
+                found = numeric(inner)
+                if found is not None:
+                    return found
+    return None
+
+
+COACH_INDEX = re.compile(r"(?:coaches|coach)\[(\d+)\]$")
+
+
 def coach_loadings(doc: Any) -> list[tuple[str, int]]:
-    """Every (coach identifier, 0-100) pair, however the response nests them."""
+    """Every (coach identifier, 0-100) pair, however the response nests them.
+
+    LDBSVWS coach objects carry `coachClass` and `loading` but NO coach number:
+    a coach is identified by its position in the `coaches` array. An earlier
+    version of this function required an explicit number field, found none, and
+    reported zero loading for services that were publishing it in full — a
+    parser bug dressed up as a finding about the railway. Hence the fallback to
+    the array index, and the guard in the report when paths exist but values
+    do not.
+    """
     pairs: list[tuple[str, int]] = []
-    for _path, node in walk(doc):
+    for path, node in walk(doc):
         if not isinstance(node, dict):
             continue
-        coach = load = None
+
+        load = None
         for key, value in node.items():
-            low = key.lower()
-            if coach is None and low in (
-                "coachnumber", "number", "coachid", "coach", "identifier", "coachletter",
-            ) and isinstance(value, (str, int)):
+            if any(h in key.lower() for h in LOADING_HINTS):
+                load = numeric(value)
+                if load is not None:
+                    break
+        if load is None:
+            continue
+
+        coach = None
+        for key, value in node.items():
+            if key.lower() in ("coachnumber", "coachletter", "coachid", "number",
+                               "identifier") and isinstance(value, (str, int)):
                 coach = str(value)
-            if load is None and any(h in low for h in LOADING_HINTS):
-                if isinstance(value, bool):
-                    continue
-                if isinstance(value, (int, float)):
-                    load = int(value)
-                elif isinstance(value, str) and value.strip().rstrip("%").isdigit():
-                    load = int(value.strip().rstrip("%"))
-        if coach is not None and load is not None:
-            pairs.append((coach, load))
+                break
+        if coach is None:                      # positional: coaches[0] is coach 1
+            match = COACH_INDEX.search(path)
+            if match:
+                coach = str(int(match.group(1)) + 1)
+        if coach is None:                      # whole-train serviceLoading, not a coach
+            continue
+        pairs.append((coach, load))
     return pairs
 
 
@@ -193,9 +231,11 @@ class Findings:
                 self.reverse_flags[f"{toc}:{reverse}"] += 1
 
             # Only indexed entries: walk() also yields the containing list node,
-            # so `formation.coaches.coach` and each `...coach[i]` both have leaf
-            # "coach" and counting them all overstates the formation by one.
-            coaches = [p for p in fpaths if leaf(p) == "coach" and p.endswith("]")]
+            # so the array and each element share a leaf name, and counting both
+            # overstates the formation by one. The real LDBSVWS shape is
+            # `formation.coaches[i]` (leaf "coaches"); accept "coach" too.
+            coaches = [p for p in fpaths
+                       if leaf(p) in ("coach", "coaches") and p.endswith("]")]
             if coaches:
                 self.coach_counts[toc][len(coaches)] += 1
             else:
@@ -342,11 +382,16 @@ SYNTHETIC = {
                 "rid": "202609160712345", "operatorCode": "TL", "std": "07:42",
                 "destination": {"location": [{"locationName": "Bedford"}]},
                 "isReverseFormation": False,
-                "formation": {"coaches": {"coach": [
-                    {"coachNumber": "A", "coachClass": "Standard", "loading": 91},
-                    {"coachNumber": "B", "coachClass": "Standard", "loading": 74},
-                    {"coachNumber": "C", "coachClass": "Standard", "loading": "38%"},
-                ]}},
+                # Shape confirmed against a real LDBSVWS response on 2026-09-16:
+                # positional coaches, coachClass + loading, NO coachNumber.
+                "formation": {
+                    "coaches": [
+                        {"coachClass": "Standard", "loading": 91},
+                        {"coachClass": "Standard", "loading": 74},
+                        {"coachClass": "Standard", "loading": "38%"},
+                    ],
+                    "serviceLoading": {"loadingPercentage": 68},
+                },
             },
             {"rid": "202609160798765", "operatorCode": "SN", "std": "07:49",
              "destination": {"location": [{"locationName": "London Victoria"}]},
@@ -364,6 +409,7 @@ def selftest() -> int:
     assert f.with_coach_loading["TL"] == 1, f.with_coach_loading
     assert f.with_coach_loading["SN"] == 0
     assert f.loading_values["TL"] == [91, 74, 38], f.loading_values
+    assert 68 not in f.loading_values["TL"], "whole-train serviceLoading leaked in as a coach"
     assert f.coach_counts["TL"][3] == 1, f.coach_counts     # 3 coaches in the fixture
     assert f.coach_counts["SN"][8] == 1, f.coach_counts     # falls back to `length`
     assert f.reverse_flags["TL:False"] == 1, f.reverse_flags
