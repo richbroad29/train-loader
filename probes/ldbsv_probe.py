@@ -195,6 +195,8 @@ class Findings:
         self.services = Counter()            # toc -> count
         self.with_formation = Counter()
         self.with_coach_loading = Counter()
+        self.with_service_loading = Counter()     # whole-train figure, the weaker tier
+        self.service_loading_values = defaultdict(list)
         self.coach_counts = defaultdict(Counter)   # toc -> {8: n, 12: n}
         self.loading_values = defaultdict(list)
         self.destinations = defaultdict(Counter)   # toc -> destination -> n
@@ -243,6 +245,17 @@ class Findings:
                 if isinstance(length, int) and length:
                     self.coach_counts[toc][length] += 1
 
+            # Whole-train loading is a different, much weaker thing than per-coach,
+            # and the two must never be conflated in the coverage table: an operator
+            # can publish "this train is busy" while publishing nothing per carriage.
+            for spath, snode in walk(service):
+                if leaf(spath) == "serviceloading" and isinstance(snode, dict):
+                    value = numeric(snode)
+                    if value is not None:
+                        self.with_service_loading[toc] += 1
+                        self.service_loading_values[toc].append(value)
+                    break
+
             pairs = coach_loadings(service)
             if pairs:
                 self.with_coach_loading[toc] += 1
@@ -258,7 +271,7 @@ class Findings:
             "",
             "## The decisive question: per-coach loading",
             "",
-            "| TOC | services | formation | **per-coach loading** | per-calling-point formation |",
+            "| TOC | services | formation | **per-coach loading** | whole-train loading |",
             "|---|---|---|---|---|",
         ]
         total_loading = 0
@@ -269,12 +282,21 @@ class Findings:
                 f"| {toc} | {self.services[toc]} "
                 f"| {self.with_formation[toc]} ({self.with_formation[toc]*100//n}%) "
                 f"| **{self.with_coach_loading[toc]} ({self.with_coach_loading[toc]*100//n}%)** "
-                f"| {self.formation_locations[toc]} |"
+                f"| {self.with_service_loading[toc]} ({self.with_service_loading[toc]*100//n}%) |"
             )
 
         out += ["", "## Loading values", ""]
         if any(self.loading_values.values()):
             for toc, values in sorted(self.loading_values.items()):
+                if values:
+                    out.append(f"- **{toc}**: n={len(values)}, min={min(values)}, "
+                               f"max={max(values)}, mean={sum(values)/len(values):.1f}")
+        else:
+            out.append("- None extracted.")
+
+        out += ["", "## Whole-train loading values (the weaker tier)", ""]
+        if any(self.service_loading_values.values()):
+            for toc, values in sorted(self.service_loading_values.items()):
                 if values:
                     out.append(f"- **{toc}**: n={len(values)}, min={min(values)}, "
                                f"max={max(values)}, mean={sum(values)/len(values):.1f}")
