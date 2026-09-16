@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Carriage Finder</title>
+<!--
+  THROWAWAY PROTOTYPE — github.com/richbroad29/train-loader/issues/5
+  Three variants of the platform instruction, switchable via ?variant=A|B|C.
+  All data is FAKE. The question this exists to answer:
+  can you act on "go to carriage 8" in the time you have on the platform?
+-->
+<style>
+  :root {
+    --bg: #f4f5f7; --surface: #ffffff; --ink: #14161a; --muted: #5d636e;
+    --line: #dfe3e8; --accent: #1b5fd9; --accent-ink: #ffffff;
+    --calm: #1f8a58; --mid: #b8790c; --busy: #c4382f;
+    --bar: rgba(20,22,26,.92); --bar-ink: #ffffff;
+    --r: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1114; --surface: #191c21; --ink: #f2f4f7; --muted: #9aa2ae;
+      --line: #2b3038; --accent: #5b9bff; --accent-ink: #0f1114;
+      --calm: #3fc383; --mid: #e0a52b; --busy: #ff6b5e;
+      --bar: rgba(242,244,247,.94); --bar-ink: #14161a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1114; --surface: #191c21; --ink: #f2f4f7; --muted: #9aa2ae;
+    --line: #2b3038; --accent: #5b9bff; --accent-ink: #0f1114;
+    --calm: #3fc383; --mid: #e0a52b; --busy: #ff6b5e;
+    --bar: rgba(242,244,247,.94); --bar-ink: #14161a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 400 16px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 0 16px calc(104px + env(safe-area-inset-bottom)) 16px;
+    max-width: 480px; margin: 0 auto;
+  }
+  .fake {
+    margin: 12px 0 0; padding: 7px 12px; border-radius: 999px;
+    background: var(--busy); color: #fff; font-size: 12.5px; font-weight: 600;
+    letter-spacing: .01em; text-align: center;
+  }
+  h1 { font-size: 15px; font-weight: 600; color: var(--muted); margin: 18px 0 10px;
+       letter-spacing: .02em; }
+  .muted { color: var(--muted); }
+  .prov { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         margin-right: 6px; vertical-align: baseline; }
+  .card { background: var(--surface); border: 1px solid var(--line);
+          border-radius: var(--r); padding: 16px; }
+
+  /* train picker */
+  .picker { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;
+            scrollbar-width: none; }
+  .picker::-webkit-scrollbar { display: none; }
+  .pick { flex: 0 0 auto; border: 1px solid var(--line); background: var(--surface);
+          color: var(--ink); border-radius: 999px; padding: 9px 14px; font-size: 14px;
+          font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap; }
+  .pick[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink);
+                               border-color: var(--accent); }
+  .pick small { display: block; font-weight: 400; font-size: 11.5px; opacity: .8; }
+
+  /* A — the number */
+  .huge { text-align: center; padding: 18px 0 4px; }
+  .huge .lead { font-size: 15px; color: var(--muted); letter-spacing: .04em;
+                text-transform: uppercase; }
+  .huge .num { font-size: clamp(120px, 44vw, 200px); line-height: .88; font-weight: 800;
+               letter-spacing: -.04em; margin: 6px 0 2px; }
+  .huge .of { font-size: 17px; color: var(--muted); }
+
+  /* B — the train */
+  .train { display: flex; gap: 3px; margin: 14px 0 6px; }
+  .car { flex: 1; height: 62px; border-radius: 5px; display: flex; align-items: center;
+         justify-content: center; font-size: 12px; font-weight: 700; color: #fff;
+         position: relative; }
+  .car.pick-me { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .car .n { position: absolute; bottom: -20px; color: var(--muted); font-size: 11px;
+            font-weight: 600; }
+  .ends { display: flex; justify-content: space-between; margin-top: 24px;
+          font-size: 11.5px; color: var(--muted); text-transform: uppercase;
+          letter-spacing: .05em; }
+  .legend { display: flex; gap: 14px; margin-top: 14px; font-size: 12.5px;
+            color: var(--muted); flex-wrap: wrap; }
+
+  /* C — the countdown */
+  .clock { text-align: center; padding: 8px 0 2px; }
+  .clock .t { font-size: 66px; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
+  .clock .lab { font-size: 13px; color: var(--muted); text-transform: uppercase;
+                letter-spacing: .06em; margin-top: 4px; }
+  .action { margin-top: 16px; padding: 18px; border-radius: var(--r);
+            background: var(--accent); color: var(--accent-ink); }
+  .action .go { font-size: 34px; font-weight: 800; letter-spacing: -.02em; }
+  .action .sub { font-size: 14.5px; opacity: .92; margin-top: 4px; }
+  .bar-wrap { margin-top: 14px; }
+  .meter { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--calm); }
+
+  /* switcher */
+  .switch {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    background: var(--bar); color: var(--bar-ink); border-radius: 999px;
+    display: flex; align-items: center; gap: 4px; padding: 6px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.28); z-index: 50; max-width: calc(100vw - 32px);
+  }
+  .switch button { background: transparent; border: 0; color: inherit; font: inherit;
+                   cursor: pointer; border-radius: 999px; padding: 8px 11px; font-size: 17px; }
+  .switch button:active { background: rgba(128,128,128,.28); }
+  .switch .name { font-size: 13px; font-weight: 600; padding: 0 4px; white-space: nowrap;
+                  overflow: hidden; text-overflow: ellipsis; }
+  .switch .state { font-size: 11.5px; font-weight: 600; border-radius: 999px;
+                   padding: 6px 10px; background: rgba(128,128,128,.22); cursor: pointer;
+                   border: 0; color: inherit; font-family: inherit; }
+</style>
+</head>
+<body>
+
+<div class="fake" id="fake">Prototype · every number here is invented</div>
+
+<h1 id="ctx">Preston Park → London Bridge</h1>
+<div class="picker" id="picker"></div>
+
+<div id="stage"></div>
+
+<div class="switch" role="group" aria-label="Prototype controls">
+  <button id="prev" aria-label="Previous variant">←</button>
+  <span class="name" id="vname">A</span>
+  <button id="next" aria-label="Next variant">→</button>
+  <button class="state" id="statebtn">live</button>
+</div>
+
+<script>
+// ---- FAKE DATA. Shapes mirror what Darwin would give; values are invented. ----
+const TRAINS = [
+  { id: 't1', time: '07:42', dest: 'Bedford',   cars: 12, due: 95,
+    load: [88,92,79,61,44,38,35,31,29,52,74,86] },
+  { id: 't2', time: '07:57', dest: 'Cambridge', cars: 8,  due: 995,
+    load: [91,95,88,72,58,49,63,81] },
+  { id: 't3', time: '08:12', dest: 'Bedford',   cars: 12, due: 1795,
+    load: [70,76,68,55,41,33,30,34,37,49,66,81] },
+];
+const STATES = ['live', 'estimate', 'none'];
+const VARIANTS = {
+  A: 'The number',
+  B: 'The whole train',
+  C: 'The countdown',
+};
+
+const qs = new URLSearchParams(location.search);
+let variant = (qs.get('variant') || 'A').toUpperCase();
+if (!VARIANTS[variant]) variant = 'A';
+let state = STATES.includes(qs.get('state')) ? qs.get('state') : 'live';
+let chosen = TRAINS[0].id;
+
+const train = () => TRAINS.find(t => t.id === chosen);
+const best = t => t.load.indexOf(Math.min(...t.load)) + 1;   // never exceeds t.cars
+const colourOf = v => v >= 75 ? 'var(--busy)' : v >= 50 ? 'var(--mid)' : 'var(--calm)';
+const mmss = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+function provenance() {
+  if (state === 'live')     return ['var(--calm)', 'Measured at Brighton, 41 seconds ago'];
+  if (state === 'estimate') return ['var(--mid)',  'Estimate from the last 20 weekdays — not today'];
+  return ['var(--busy)', 'No data for this train'];
+}
+
+function renderPicker() {
+  document.getElementById('picker').innerHTML = TRAINS.map(t => `
+    <button class="pick" data-id="${t.id}" aria-pressed="${t.id === chosen}">
+      ${t.time}<small>${t.dest} · ${t.cars}-car</small>
+    </button>`).join('');
+  document.querySelectorAll('.pick').forEach(b =>
+    b.onclick = () => { chosen = b.dataset.id; render(); });
+}
+
+// ---- Variant A: a bare number, as large as the screen allows ----
+function variantA(t) {
+  const [c, text] = provenance();
+  if (state === 'none') return `<div class="card huge">
+      <div class="lead">No recommendation</div>
+      <div class="num" style="font-size:72px">—</div>
+      <div class="of">We don't know how busy this train is.</div>
+      <div class="prov"><span class="dot" style="background:${c}"></span>${text}</div>
+    </div>`;
+  return `<div class="card huge">
+      <div class="lead">Go to carriage</div>
+      <div class="num">${best(t)}</div>
+      <div class="of">of ${t.cars} · ${t.time} to ${t.dest}</div>
+      <div class="prov"><span class="dot" style="background:${c}"></span>${text}</div>
+    </div>`;
+}
+
+// ---- Variant B: the whole formation, so you can count from either end ----
+function variantB(t) {
+  const [c, text] = provenance();
+  const b = best(t);
+  const cars = t.load.map((v, i) => {
+    const bg = state === 'none' ? 'var(--line)' : colourOf(v);
+    const label = state === 'none' ? '' : v + '%';
+    return `<div class="car ${i + 1 === b && state !== 'none' ? 'pick-me' : ''}"
+              style="background:${bg}">${label}<span class="n">${i + 1}</span></div>`;
+  }).join('');
+  return `<div class="card">
+      <div style="font-size:15px;color:var(--muted)">${t.time} to ${t.dest} · ${t.cars} carriages</div>
+      <div class="train">${cars}</div>
+      <div class="ends"><span>← London end</span><span>Brighton end →</span></div>
+      ${state === 'none' ? '<p class="muted" style="margin:18px 0 0">No loading data — the shape is all we know.</p>'
+        : `<p style="margin:18px 0 0;font-size:19px"><strong>Carriage ${b}</strong> is the emptiest.</p>`}
+      <div class="legend">
+        <span><span class="dot" style="background:var(--calm)"></span>seats</span>
+        <span><span class="dot" style="background:var(--mid)"></span>filling</span>
+        <span><span class="dot" style="background:var(--busy)"></span>full</span>
+      </div>
+      <div class="prov"><span class="dot" style="background:${c}"></span>${text}</div>
+    </div>`;
+}
+
+// ---- Variant C: time first — can you even get there? ----
+function variantC(t) {
+  const [c, text] = provenance();
+  const b = best(t);
+  const WALK = 55;                      // seconds to walk the length of the platform
+  const reachable = t.due > WALK;
+  const pct = Math.max(0, Math.min(100, Math.round((t.due - WALK) / t.due * 100)));
+  if (state === 'none') return `<div class="card">
+      <div class="clock"><div class="t">${mmss(t.due)}</div><div class="lab">until it arrives</div></div>
+      <div class="action" style="background:var(--line);color:var(--ink)">
+        <div class="go">Board anywhere</div>
+        <div class="sub">No data for this one. Rear carriages are usually quieter.</div>
+      </div>
+      <div class="prov"><span class="dot" style="background:${c}"></span>${text}</div>
+    </div>`;
+  return `<div class="card">
+      <div class="clock"><div class="t">${mmss(t.due)}</div><div class="lab">until it arrives</div></div>
+      <div class="action" ${reachable ? '' : 'style="background:var(--busy);color:#fff"'}>
+        <div class="go">Carriage ${b}</div>
+        <div class="sub">${reachable
+          ? `About ${WALK}s walk. You have time.`
+          : `That's ${WALK}s away — you won't make it. Nearest decent: carriage ${Math.max(1, b - 3)}.`}</div>
+      </div>
+      <div class="bar-wrap">
+        <div class="meter"><i style="width:${pct}%;background:${reachable ? 'var(--calm)' : 'var(--busy)'}"></i></div>
+        <div class="prov">Walking time against time remaining</div>
+      </div>
+      <div class="prov"><span class="dot" style="background:${c}"></span>${text}</div>
+    </div>`;
+}
+
+function render() {
+  const t = train();
+  document.getElementById('stage').innerHTML =
+    variant === 'A' ? variantA(t) : variant === 'B' ? variantB(t) : variantC(t);
+  document.getElementById('vname').textContent = `${variant} · ${VARIANTS[variant]}`;
+  document.getElementById('statebtn').textContent = state;
+  renderPicker();
+  const u = new URL(location.href);
+  u.searchParams.set('variant', variant);
+  u.searchParams.set('state', state);
+  history.replaceState(null, '', u);
+}
+
+const keys = Object.keys(VARIANTS);
+const cycle = step => {
+  variant = keys[(keys.indexOf(variant) + step + keys.length) % keys.length];
+  render();
+};
+document.getElementById('prev').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+document.getElementById('statebtn').onclick = () => {
+  state = STATES[(STATES.indexOf(state) + 1) % STATES.length];
+  render();
+};
+addEventListener('keydown', e => {
+  const el = document.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+
+render();
+</script>
+</body>
+</html>
