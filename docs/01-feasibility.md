@@ -1,5 +1,13 @@
 # Feasibility: carriage-level seat advice on the Brighton Main Line
 
+> **Superseded in part.** This document was written before the destination was settled. The
+> current, canonical statement of what is being built is the wayfinder map:
+> <https://github.com/richbroad29/train-loader/issues/1>. Where they disagree, the map wins.
+> In particular: the journey is Preston Park ↔ London Bridge (an interception in both
+> directions, not boarding at Brighton), the operator is Thameslink only, and the output is a
+> **carriage number**, not a platform position.
+
+
 Status: research complete, **one decisive unknown remains** (see §5).
 Date: 2026-09-16. Everything here should be re-checked against live data before it is trusted.
 

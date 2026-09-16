@@ -1,5 +1,13 @@
 # Product concept
 
+> **Superseded in part.** This document was written before the destination was settled. The
+> current, canonical statement of what is being built is the wayfinder map:
+> <https://github.com/richbroad29/train-loader/issues/1>. Where they disagree, the map wins.
+> In particular: the journey is Preston Park ↔ London Bridge (an interception in both
+> directions, not boarding at Brighton), the operator is Thameslink only, and the output is a
+> **carriage number**, not a platform position.
+
+
 ## The job to be done
 
 > "I'm walking into Brighton station. The 08:12 is on platform 6. Which door do I stand at
