@@ -371,9 +371,23 @@ def run(args: argparse.Namespace) -> int:
                 path.write_text(json.dumps(board, indent=2))
             findings.absorb(station, board)
         findings.samples += 1
-        print(f"[{stamp}] sample {sample+1}/{args.samples}: "
-              f"{sum(findings.services.values())} services so far, "
-              f"{sum(findings.with_coach_loading.values())} with per-coach loading")
+
+        # Per-operator, because the aggregate is misleading: Southeastern at London
+        # Bridge can supply every per-coach figure in the sample while the operator
+        # actually being investigated supplies none.
+        breakdown = ", ".join(
+            f"{toc} {findings.with_coach_loading[toc]}/{findings.services[toc]}"
+            for toc in sorted(findings.services)
+        ) or "nothing yet"
+        print(f"[{stamp}] sample {sample+1}/{args.samples} — per-coach loading: {breakdown}")
+
+        # Write the report after every sample, not only at the end. A two-hour run
+        # killed by a closed laptop lid at sample 9 otherwise produces nothing at all.
+        interim = out_dir / f"ldbsv-coverage-{london_stamp()}.md"
+        interim.write_text(findings.report())
+        for stale in sorted(out_dir.glob("ldbsv-coverage-*.md"))[:-1]:
+            stale.unlink(missing_ok=True)
+
         if sample + 1 < args.samples:
             time.sleep(args.interval)
 
