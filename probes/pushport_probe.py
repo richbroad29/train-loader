@@ -29,8 +29,9 @@ import json
 import os
 import sys
 import time
+import pathlib
 import xml.etree.ElementTree as ET
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,7 +59,7 @@ def decode(body: bytes | str) -> str:
 
 def parse_message(xml_text: str) -> dict:
     """Pull message-type counts and any per-coach loading out of one Pport message."""
-    result: dict = {"types": Counter(), "loadings": [], "formations": []}
+    result: dict = {"types": Counter(), "loadings": [], "formations": [], "schedules": []}
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
@@ -93,6 +94,16 @@ def parse_message(xml_text: str) -> dict:
                 "coaches": coaches,
             })
 
+        # Darwin identifies a service by RID, which does not encode the operator.
+        # The operator only arrives on the schedule message, so build the map as
+        # schedules stream past. Without this the run produces a loading count
+        # nobody can attribute -- useless for a question about one operator.
+        if name == "schedule":
+            rid = element.attrib.get("rid")
+            toc = element.attrib.get("toc")
+            if rid and toc:
+                result["schedules"].append((rid, toc.upper()))
+
         if name == "formation":
             coaches = [
                 {
@@ -121,11 +132,31 @@ class Recorder:
         self.messages = 0
         self.loading_messages = 0
         self.coach_values = 0
+        self.rid_toc: dict[str, str] = {}            # built from schedule messages
+        self.loading_by_toc: Counter = Counter()     # formationLoading, per operator
+        self.formation_by_toc: Counter = Counter()   # consist, per operator
+        self.values_by_toc: dict[str, list[int]] = defaultdict(list)
+        self.started = datetime.now(timezone.utc)
 
     def handle(self, body: bytes | str) -> None:
         self.messages += 1
         parsed = parse_message(decode(body))
         self.types.update(parsed["types"])
+
+        for rid, toc in parsed["schedules"]:
+            self.rid_toc[rid] = toc
+
+        for record in parsed["loadings"]:
+            toc = self.rid_toc.get(record.get("rid") or "", "??")
+            record["toc"] = toc
+            self.loading_by_toc[toc] += 1
+            self.values_by_toc[toc] += [
+                c["loading"] for c in record["coaches"] if isinstance(c.get("loading"), int)
+            ]
+        for record in parsed["formations"]:
+            record["toc"] = self.rid_toc.get(record.get("rid") or "", "??")
+            self.formation_by_toc[record["toc"]] += 1
+
         if parsed["loadings"]:
             self.loading_messages += len(parsed["loadings"])
             with self.loading_file.open("a") as handle:
@@ -138,11 +169,51 @@ class Recorder:
                     handle.write(json.dumps(record) + "\n")
 
     def summary(self) -> str:
-        top = ", ".join(f"{name}={count}" for name, count in self.types.most_common(12))
+        mins = (datetime.now(timezone.utc) - self.started).total_seconds() / 60
+        by_toc = ", ".join(
+            f"{toc}={self.loading_by_toc[toc]}" for toc in sorted(self.loading_by_toc)
+        ) or "none yet"
         return (
-            f"messages={self.messages} formationLoading={self.loading_messages} "
-            f"coach_values={self.coach_values}\n  types: {top}"
+            f"{mins:.0f}m in: {self.messages} messages, {len(self.rid_toc)} services known, "
+            f"{self.loading_messages} formationLoading\n"
+            f"  per-coach loading BY OPERATOR: {by_toc}\n"
+            f"  (?? = loading seen before that service's schedule arrived)"
         )
+
+    def report(self) -> str:
+        """The answer, in the form the question was asked."""
+        watched = ("TL", "SN", "GX")
+        lines = [
+            "# Darwin Push Port coverage",
+            "",
+            f"- Listening since: {self.started.isoformat(timespec='seconds')}",
+            f"- Messages: {self.messages}; services seen: {len(self.rid_toc)}",
+            f"- formationLoading messages: {self.loading_messages}",
+            "",
+            "## Per-coach loading by operator",
+            "",
+            "| TOC | formationLoading msgs | formation msgs | coach values |",
+            "|---|---|---|---|",
+        ]
+        for toc in sorted(set(self.loading_by_toc) | set(self.formation_by_toc)):
+            lines.append(f"| {toc} | {self.loading_by_toc[toc]} | "
+                         f"{self.formation_by_toc[toc]} | {len(self.values_by_toc[toc])} |")
+        lines += ["", "## Verdict", ""]
+        gtr = sum(self.loading_by_toc[t] for t in watched)
+        if gtr:
+            lines.append(f"**GTR DOES publish formationLoading on the Push Port** "
+                         f"({gtr} messages across {', '.join(watched)}) even though LDBSVWS "
+                         "showed none. The carriage-level product is back on.")
+        elif self.loading_messages:
+            others = ", ".join(f"{t}={self.loading_by_toc[t]}"
+                               for t in sorted(self.loading_by_toc) if t not in watched)
+            lines.append(f"Other operators publish it ({others}) but **{', '.join(watched)} "
+                         "published none**. Same answer as LDBSVWS, now from the fuller feed. "
+                         "The carriage-level product is not possible on this route.")
+        else:
+            lines.append("No formationLoading seen from anyone. Inconclusive — check the "
+                         "subscription covers the right topic before reading anything into it.")
+        return "\n".join(lines) + "\n"
 
 
 def run(args: argparse.Namespace) -> int:
@@ -179,25 +250,31 @@ def run(args: argparse.Namespace) -> int:
     connection.connect(USER, PASSWORD, wait=True)
     connection.subscribe(destination=TOPIC, id=1, ack="auto")
     print(f"subscribed to {TOPIC} on {HOST}:{PORT}; running for {args.hours}h")
+    report_path = Path(args.out) / "pushport-coverage.md"
 
     deadline = time.time() + args.hours * 3600
     try:
         while time.time() < deadline:
             time.sleep(args.report_every)
             print(f"[{datetime.now(timezone.utc):%H:%M:%S}] {recorder.summary()}")
+            report_path.write_text(recorder.report())   # survive an interrupted run
     except KeyboardInterrupt:
         print("\ninterrupted")
     finally:
         connection.disconnect()
 
-    print("\n" + recorder.summary())
+    report_path.write_text(recorder.report())
+    print("\n" + recorder.report())
     print(f"loading records -> {recorder.loading_file}")
+    print(f"report          -> {report_path}")
     return 0
 
 
 SYNTHETIC = b"""<?xml version="1.0" encoding="utf-8"?>
 <Pport xmlns="http://www.thalesgroup.com/rtti/PushPort/v16" ts="2026-09-16T08:12:03.1Z">
   <uR updateOrigin="CIS">
+    <schedule rid="202609168012345" uid="W12345" trainId="9F12" toc="TL"
+              ssd="2026-09-16"/>
     <formationLoading fid="202609160812-001" rid="202609168012345" tpl="HYWRDSH"
                       wta="08:40" wtd="08:41">
       <loading coachNumber="A">48</loading>
@@ -215,6 +292,7 @@ SYNTHETIC = b"""<?xml version="1.0" encoding="utf-8"?>
 
 def selftest() -> int:
     parsed = parse_message(decode(gzip.compress(SYNTHETIC)))
+    assert parsed["schedules"] == [("202609168012345", "TL")], parsed["schedules"]
     assert parsed["types"]["formationloading"] == 1, parsed["types"]
     assert len(parsed["loadings"]) == 1
     record = parsed["loadings"][0]
@@ -224,7 +302,30 @@ def selftest() -> int:
     assert len(parsed["formations"]) == 1
     assert parsed["formations"][0]["coaches"][2]["class"] == "First"
     assert parse_message("not xml")["types"]["_parse_error"] == 1
-    print("selftest ok: gzip decode, namespace-agnostic parse, loading + formation extraction")
+
+    # The question is "does GTR publish this", so attribution to an operator is
+    # the whole point. A run that cannot answer that is a wasted day of listening.
+    import tempfile
+    rec = Recorder(pathlib.Path(tempfile.mkdtemp()))
+    rec.handle(gzip.compress(SYNTHETIC))
+    assert rec.rid_toc == {"202609168012345": "TL"}, rec.rid_toc
+    assert rec.loading_by_toc["TL"] == 1, rec.loading_by_toc
+    assert rec.values_by_toc["TL"] == [48, 77, 100], rec.values_by_toc
+    assert rec.formation_by_toc["TL"] == 1, rec.formation_by_toc
+    report = rec.report()
+    assert "GTR DOES publish formationLoading" in report, report
+
+    # Loading arriving before its schedule must not be silently attributed.
+    orphan = SYNTHETIC.replace(b'<schedule rid="202609168012345" uid="W12345" '
+                               b'trainId="9F12" toc="TL"\n              ssd="2026-09-16"/>', b"")
+    rec2 = Recorder(pathlib.Path(tempfile.mkdtemp()))
+    rec2.handle(gzip.compress(orphan))
+    assert rec2.loading_by_toc["??"] == 1, rec2.loading_by_toc
+    assert "Inconclusive" not in rec2.report()
+
+    print("selftest ok: gzip decode, namespace-agnostic parse, loading + formation")
+    print("             extraction, schedule->operator mapping, unattributed loading,")
+    print("             verdict wording")
     return 0
 
 
