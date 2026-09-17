@@ -86,19 +86,73 @@ def numeric(value: Any) -> int | None:
     return None
 
 
+def xml_to_dict(element) -> Any:
+    """ElementTree -> the same nested shape an XML-to-JSON converter produces.
+
+    Attributes become "@name", text becomes "#text", repeated children become
+    lists. That way one set of walk/attr/numeric helpers reads both payload
+    formats and nothing downstream needs to know which arrived.
+    """
+    node: dict[str, Any] = {f"@{k}": v for k, v in element.attrib.items()}
+    text = (element.text or "").strip()
+    if text:
+        node["#text"] = text
+    for child in element:
+        tag = child.tag.rsplit("}", 1)[-1]
+        value = xml_to_dict(child)
+        if tag in node:
+            if not isinstance(node[tag], list):
+                node[tag] = [node[tag]]
+            node[tag].append(value)
+        else:
+            node[tag] = value
+    return node or text
+
+
 def unwrap(raw: bytes | str) -> Any:
-    """Kafka value -> Darwin payload.
+    """Kafka value -> Darwin payload, whatever the topic is serving.
 
     The message is double-encoded: the outer JSON carries the real payload as a
-    JSON *string* under `bytes`. Both official clients do this; discovering it
-    the hard way costs an afternoon.
+    string under `bytes`. Both official clients then json.loads that string --
+    but the RDM topics come in JSON and XML flavours (the XML one is named
+    ...-XML), and the payload may also arrive gzipped. Sniff rather than assume:
+    a probe that mistakes a format it cannot read for an absence of data is
+    exactly the failure this whole exercise has already been burnt by once.
     """
-    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
-    outer = json.loads(text)
-    if isinstance(outer, dict) and "bytes" in outer:
-        inner = outer["bytes"]
-        return json.loads(inner) if isinstance(inner, str) else inner
-    return outer
+    data = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+    try:
+        outer = json.loads(data.decode("utf-8", "replace"))
+        if isinstance(outer, dict) and "bytes" in outer:
+            inner = outer["bytes"]
+            data = inner.encode("utf-8") if isinstance(inner, str) else inner
+        else:
+            return outer                       # already the payload
+    except ValueError:
+        pass                                   # not a JSON envelope; treat as raw
+
+    if data[:2] == b"\x1f\x8b":
+        import gzip
+        data = gzip.decompress(data)
+
+    stripped = data.lstrip()
+    if stripped[:1] == b"<":
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(stripped.decode("utf-8", "replace"))
+        return {root.tag.rsplit("}", 1)[-1]: xml_to_dict(root)}
+
+    text = data.decode("utf-8", "replace")
+    if stripped[:1] in (b"{", b"["):
+        return json.loads(text)
+
+    # base64 is the remaining plausible wrapper; try it once before giving up.
+    try:
+        import base64
+        decoded = base64.b64decode(text, validate=True)
+        if decoded[:1] in (b"<", b"{") or decoded[:2] == b"\x1f\x8b":
+            return unwrap(decoded)
+    except Exception:
+        pass
+    raise ValueError(f"unrecognised payload, starts: {text[:60]!r}")
 
 
 class Findings:
@@ -114,13 +168,16 @@ class Findings:
         self.element_types: Counter = Counter()
         self.loading_paths: set[str] = set()
         self.decode_errors = 0
+        self.first_payload: str | None = None
 
     def handle(self, raw: bytes | str) -> None:
         self.messages += 1
         try:
             payload = unwrap(raw)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
             self.decode_errors += 1
+            if self.first_payload is None:
+                self.first_payload = str(exc)[:200]
             return
 
         # Pass 1: schedules carry the operator. Darwin keys a service by RID,
@@ -211,6 +268,9 @@ class Findings:
             lines.append("**Inconclusive.** No formationLoading from any operator. Either the "
                          "run was too short, or the subscription/topic is wrong. Do not read "
                          "this as an answer about GTR.")
+            if self.decode_errors:
+                lines += ["", f"{self.decode_errors} messages could not be decoded. "
+                              f"First failure: `{self.first_payload}`"]
             if self.element_types:
                 seen = ", ".join(f"{k}={v}" for k, v in self.element_types.most_common(12))
                 lines += ["", f"Message types seen: {seen}"]
@@ -338,11 +398,30 @@ def selftest() -> int:
     empty.handle(json.dumps({"bytes": json.dumps({"Pport": {"uR": {"TS": {"@rid": "x"}}}})}).encode())
     assert "Inconclusive" in empty.report()
 
-    empty.handle(b"not json")
+    empty.handle(b"\x00\x01 not a payload")
     assert empty.decode_errors == 1
+    assert "unrecognised payload" in (empty.first_payload or "")
 
-    print("selftest ok: double-encoded unwrap, @attribute sigils, schedule->operator map,")
-    print("             positional + named coaches, and all three verdicts")
+    # The topic this project subscribes to is named ...-XML, so the XML payload
+    # path is the one that matters most; gzip is plausible on top of it.
+    xml = ('<?xml version="1.0"?><Pport xmlns="http://www.thalesgroup.com/rtti/PushPort/v16">'
+           '<uR><schedule rid="r-tl" toc="TL"/>'
+           '<formationLoading rid="r-tl" tpl="PRESTPK">'
+           '<loading coachNumber="A">48</loading><loading coachNumber="B">77</loading>'
+           '</formationLoading></uR></Pport>')
+    as_xml = Findings(Path(tempfile.mkdtemp()))
+    as_xml.handle(json.dumps({"bytes": xml}).encode())
+    assert as_xml.rid_toc == {"r-tl": "TL"}, as_xml.rid_toc
+    assert as_xml.values_by_toc["TL"] == [48, 77], as_xml.values_by_toc
+
+    import gzip
+    zipped = Findings(Path(tempfile.mkdtemp()))
+    zipped.handle(gzip.compress(xml.encode()))
+    assert zipped.values_by_toc["TL"] == [48, 77], zipped.values_by_toc
+
+    print("selftest ok: JSON, XML and gzipped-XML payloads, double-encoded unwrap,")
+    print("             @attribute sigils, schedule->operator map, positional + named")
+    print("             coaches, undecodable diagnostics, and all three verdicts")
     return 0
 
 
