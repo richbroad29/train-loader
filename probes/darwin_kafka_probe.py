@@ -236,6 +236,23 @@ class Findings:
             values[toc] += [c["loading"] for c in record["coaches"]]
         return by_toc, values, unknown
 
+    def rates(self) -> dict[str, tuple[int, int]]:
+        """Per operator: (services positively identified, of those, how many loaded).
+
+        The unattributed bucket does not drain by listening — those services'
+        schedules were published before the topic's retention window and will
+        never arrive. So the question is asked the other way round: among the
+        services whose operator IS known, which operators load and which do not.
+        That has a denominator, and is unaffected by the orphans.
+        """
+        seen = Counter(self.rid_toc.values())
+        loaded: dict[str, set] = defaultdict(set)
+        for record in self.loading_records:
+            toc = self.rid_toc.get(record["rid"], "")
+            if toc:
+                loaded[toc].add(record["rid"])
+        return {toc: (seen[toc], len(loaded.get(toc, ()))) for toc in sorted(seen)}
+
     def progress(self) -> str:
         mins = (datetime.now(timezone.utc) - self.started).total_seconds() / 60
         by_toc, _values, unknown = self.attribute()
@@ -273,35 +290,47 @@ class Findings:
         if not total:
             lines.append("| _none_ | 0 | 0 | - | - | - |")
 
+        rates = self.rates()
+        lines += ["", "## Loading rate among positively identified services", ""]
+        lines.append("Only services whose schedule was seen, so the orphan bucket cannot "
+                     "skew it. This is the comparison the verdict rests on.")
+        lines += ["", "| TOC | services identified | of those, with per-coach loading |",
+                  "|---|---|---|"]
+        for toc, (seen, loaded) in sorted(rates.items(), key=lambda kv: -kv[1][0])[:12]:
+            pct = f"{loaded * 100 // seen}%" if seen else "-"
+            mark = "  ← yours" if toc in WATCHED else ""
+            lines.append(f"| {toc}{mark} | {seen} | {loaded} ({pct}) |")
+
         lines += ["", "## Verdict", ""]
-        # Attribution quality gates the verdict. A run that identified the operator
-        # for a minority of loading messages cannot say anything about an operator
-        # that did not appear: absence of evidence is sitting in the "??" bucket.
-        blind = unknown / total if total else 1.0
-        if gtr:
-            lines.append(f"**GTR PUBLISHES per-coach loading on the push feed** — {gtr} "
-                         f"messages across {', '.join(WATCHED)}, despite LDBSVWS showing "
-                         "none. The carriage-level product is back on, via this feed.")
-        elif total and blind > 0.10:
-            lines.append(f"**INCONCLUSIVE — not an answer about GTR.** {unknown} of {total} "
-                         f"loading messages ({blind:.0%}) could not be attributed to an "
-                         "operator, because their service's schedule never arrived in this "
-                         "run. Thameslink data could be sitting in that bucket.")
-            lines += ["", "Run for longer (30+ minutes) so more schedules accumulate. The "
-                          "verdict only means something once most loading is attributed."]
-        elif total:
-            others = ", ".join(f"{t}={by_toc[t]}" for t in sorted(by_toc) if t not in WATCHED)
-            lines.append(f"Per-coach loading flows on this feed ({others}), {named} messages "
-                         f"attributed and only {unknown} not, and **none from "
-                         f"{', '.join(WATCHED)}**. The fuller feed agrees with LDBSVWS: GTR "
-                         "does not produce this data.")
+        gtr_seen = sum(rates.get(t, (0, 0))[0] for t in WATCHED)
+        gtr_loaded = sum(rates.get(t, (0, 0))[1] for t in WATCHED)
+        others_loaded = sum(l for toc, (_s, l) in rates.items() if toc not in WATCHED)
+        if gtr_loaded:
+            lines.append(f"**GTR PUBLISHES per-coach loading** — {gtr_loaded} of {gtr_seen} "
+                         "identified services across " + ", ".join(WATCHED) +
+                         ", despite LDBSVWS showing none. The carriage-level product is "
+                         "back on, via this feed.")
+        elif gtr_seen < 30:
+            lines.append(f"**INCONCLUSIVE.** Only {gtr_seen} services from "
+                         f"{', '.join(WATCHED)} were positively identified — too few to "
+                         "conclude anything from their silence. Run again across a busier "
+                         "period.")
+        elif not others_loaded:
+            lines.append("**INCONCLUSIVE.** No identified service from any operator carried "
+                         "per-coach loading, so the absence says nothing about GTR "
+                         "specifically. Check the topic and subscription.")
         else:
-            lines.append("**Inconclusive.** No formationLoading from any operator. Either the "
-                         "run was too short, or the subscription/topic is wrong. Do not read "
-                         "this as an answer about GTR.")
-            if self.decode_errors:
-                lines += ["", f"{self.decode_errors} messages could not be decoded. "
-                              f"First failure: `{self.first_payload}`"]
+            lines.append(f"**GTR does not publish per-coach loading.** {gtr_seen} services "
+                         f"across {', '.join(WATCHED)} were positively identified and "
+                         f"**none carried it**, while other operators on the same feed, in "
+                         f"the same window, loaded {others_loaded} services. This is the "
+                         "fuller feed agreeing with LDBSVWS. The carriage-level product is "
+                         "not possible on this route, and no further checking will change it.")
+            lines += ["", f"({unknown} loading messages remain unattributed. They do not "
+                          "affect this: the comparison above is drawn only from services "
+                          "whose operator is known, and those schedules are missing because "
+                          "they predate the topic's retention, not because of anything "
+                          "operator-specific.)"]
         if self.loading_paths:
             lines += ["", "## Where loading was found", ""]
             lines += [f"- `{p}`" for p in sorted(self.loading_paths)[:10]]
@@ -423,7 +452,8 @@ def selftest() -> int:
     late.handle(json.dumps({"bytes": json.dumps({"Pport": {"uR": {
         "schedule": {"@rid": "r9", "@toc": "TL"}}}})}).encode())
     assert late.attribute()[0]["TL"] == 1, late.attribute()
-    assert "GTR PUBLISHES" in late.report()
+    assert late.rates()["TL"] == (1, 1), late.rates()
+    assert "GTR PUBLISHES" in late.report(), late.report()
 
     # GTR silent while others publish must read as a decision, not as "no data".
     other = Findings(Path(tempfile.mkdtemp()))
@@ -431,14 +461,30 @@ def selftest() -> int:
         "schedule": {"@rid": "r1", "@toc": "SE"},
         "formationLoading": {"@rid": "r1", "loading": [{"@coachNumber": "A", "#text": "90"}]},
     }}})}).encode())
-    report = other.report()
-    assert "none from TL, SN, GX" in report, report
-    assert "INCONCLUSIVE" not in report
+    # One SE service loading and no GTR services seen must NOT read as an answer
+    # about GTR -- under the old message-counting verdict it did.
+    assert "INCONCLUSIVE" in other.report(), other.report()
+
+    # With a real denominator it becomes an answer: GTR services identified in
+    # numbers, none of them loading, while another operator on the same feed does.
+    rate = Findings(Path(tempfile.mkdtemp()))
+    for i in range(40):
+        rate.handle(json.dumps({"bytes": json.dumps({"Pport": {"uR": {
+            "schedule": {"@rid": f"tl{i}", "@toc": "TL"}}}})}).encode())
+    for i in range(20):
+        rate.handle(json.dumps({"bytes": json.dumps({"Pport": {"uR": {
+            "schedule": {"@rid": f"se{i}", "@toc": "SE"}}}})}).encode())
+        if i < 15:
+            rate.handle(json.dumps({"bytes": json.dumps({"Pport": {"uR": {"formationLoading":
+                {"@rid": f"se{i}", "loading": [{"@coachNumber": "A", "#text": "70"}]}}}})}).encode())
+    assert rate.rates()["TL"] == (40, 0), rate.rates()
+    assert rate.rates()["SE"] == (20, 15), rate.rates()
+    assert "GTR does not publish per-coach loading" in rate.report(), rate.report()
 
     # Nothing at all must NOT be reported as an answer about GTR.
     empty = Findings(Path(tempfile.mkdtemp()))
     empty.handle(json.dumps({"bytes": json.dumps({"Pport": {"uR": {"TS": {"@rid": "x"}}}})}).encode())
-    assert "Inconclusive" in empty.report()
+    assert "INCONCLUSIVE" in empty.report(), empty.report()
 
     empty.handle(b"\x00\x01 not a payload")
     assert empty.decode_errors == 1
